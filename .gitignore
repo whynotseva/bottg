@@ -23,24 +23,30 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 ENV/
+
+# Environment variables
 .env
 
-# Logs
+# Logs and data
 *.log
 logs.json
 users.json
 stats.json
-
-# Database
-*.db
+bot.log
+users.db
 *.sqlite3
-
-# Excel files
 *.xlsx
 
 # IDE
 .idea/
 .vscode/
 *.swp
-*.swo 
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._* 
