@@ -7,6 +7,8 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
+import signal
+from signal import SIGINT, SIGTERM
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
@@ -35,17 +37,21 @@ PROMO_CODE = "SECRET15"
 PROMO_DELAY = 10
 MY_USERNAME = "dmitrenko_ai"
 
-LOGS_FILE = "logs.json"
-USERS_FILE = "users.json"
-STATS_FILE = "stats.json"
-DB_FILE = "users.db"
+# Пути к файлам данных
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)  # Создаем директорию сразу
+
+LOGS_FILE = os.path.join(DATA_DIR, "logs.json")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+STATS_FILE = os.path.join(DATA_DIR, "stats.json")
+DB_FILE = os.path.join(DATA_DIR, "users.db")
 
 # ==== Логирование ====
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log'),
+        logging.FileHandler(os.path.join(DATA_DIR, 'bot.log')),
         logging.StreamHandler()
     ]
 )
@@ -380,109 +386,43 @@ async def admin_panel(message: Message):
     )
     await message.answer("⚙️ <b>Админ-панель</b>", parse_mode="HTML", reply_markup=kb)
 
-@dp.callback_query(lambda c: c.data in ["admin_excel_stats", "admin_broadcast", "admin_close", "admin_return", "broadcast_confirm"])
+@dp.callback_query(lambda c: c.data in ["admin_excel_stats", "admin_broadcast", "admin_close"])
 async def admin_panel_actions(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         await call.answer("❌ Нет доступа!", show_alert=True)
         return
 
     try:
-        if call.data == "admin_close":
-            await state.clear()
-            await call.message.edit_text("❌ Панель закрыта.")
-            return
-
-        elif call.data == "admin_excel_stats":
-            await call.answer("📊 Создаю отчет...")
+        if call.data == "admin_excel_stats":
+            await call.message.edit_text("📊 Создаю отчет...")
             if await create_excel_report():
                 file = FSInputFile("bot_statistics.xlsx")
-                await call.message.answer_document(
-                    document=file,
-                    caption="📊 Отчёт по пользователям бота"
-                )
-                os.remove("bot_statistics.xlsx")
+                await call.message.answer_document(file)
                 await return_to_admin_panel(call.message)
             else:
-                await call.message.edit_text("❌ Ошибка при создании отчета.")
+                await call.message.edit_text("❌ Ошибка при создании отчета")
                 await asyncio.sleep(2)
                 await return_to_admin_panel(call.message)
-            return
 
         elif call.data == "admin_broadcast":
+            await state.set_state(BroadcastStates.waiting_broadcast_text)
             kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="❌ Отменить",
-                            callback_data="admin_return"
-                        )
-                    ]
-                ]
+                inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="◀️ Назад",
+                        callback_data="admin_return"
+                    )
+                ]]
             )
             await call.message.edit_text(
-                "📢 Введите текст для рассылки:\n\n"
-                "⚠️ <i>Сообщение не должно превышать 4096 символов</i>\n\n"
-                "Для отмены нажмите кнопку ниже ⬇️",
+                "📢 Введите текст для рассылки:\n"
+                "<i>Поддерживается HTML-разметка</i>",
                 parse_mode="HTML",
                 reply_markup=kb
             )
-            await state.set_state(BroadcastStates.waiting_broadcast_text)
-            return
 
-        elif call.data == "admin_return":
-            await state.clear()
-            await return_to_admin_panel(call.message)
-            return
-
-        elif call.data == "broadcast_confirm":
-            data = await state.get_data()
-            text_to_send = data.get("broadcast_text")
-            
-            if not text_to_send:
-                await call.message.edit_text("❌ Ошибка: текст рассылки не найден.")
-                await state.clear()
-                await asyncio.sleep(2)
-                await return_to_admin_panel(call.message)
-                return
-
-            users = await get_users_list()
-            if not users:
-                await call.message.edit_text("❌ Нет пользователей для рассылки.")
-                await state.clear()
-                await asyncio.sleep(2)
-                await return_to_admin_panel(call.message)
-                return
-
-            sent_count = 0
-            failed_count = 0
-            blocked_count = 0
-
-            status_message = await call.message.edit_text("📢 Начинаю рассылку...")
-
-            for user in users:
-                user_id = user[0]
-                if await safe_send_message(user_id, text_to_send, parse_mode="HTML"):
-                    sent_count += 1
-                else:
-                    failed_count += 1
-                
-                if sent_count % 10 == 0:
-                    await status_message.edit_text(
-                        f"📢 Рассылка в процессе...\n"
-                        f"✅ Отправлено: {sent_count}\n"
-                        f"❌ Ошибок: {failed_count}\n"
-                        f"🚫 Заблокировали: {blocked_count}"
-                    )
-
-            await status_message.edit_text(
-                f"📢 Рассылка завершена.\n"
-                f"✅ Успешно отправлено: {sent_count}\n"
-                f"❌ Ошибок: {failed_count}\n"
-                f"🚫 Заблокировали: {blocked_count}"
-            )
-            await state.clear()
-            await asyncio.sleep(3)
-            await return_to_admin_panel(call.message)
+        elif call.data == "admin_close":
+            await call.message.delete()
 
     except Exception as e:
         logging.error(f"Ошибка в админ-панели: {e}")
@@ -609,15 +549,6 @@ async def process_callback(call: CallbackQuery):
 @dp.message(BroadcastStates.waiting_broadcast_text)
 async def process_broadcast_text(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ У вас нет прав!")
-        return
-
-    if not message.text:
-        await message.answer("❌ Текст сообщения не может быть пустым.")
-        return
-
-    if len(message.text) > 4096:
-        await message.answer("❌ Текст сообщения не может превышать 4096 символов.")
         return
 
     await state.update_data(broadcast_text=message.text)
@@ -632,23 +563,20 @@ async def process_broadcast_text(message: Message, state: FSMContext):
             ],
             [
                 InlineKeyboardButton(
-                    text="❌ Отменить",
+                    text="◀️ Отмена",
                     callback_data="admin_return"
                 )
             ]
         ]
     )
     
-    preview_text = message.text if len(message.text) <= 400 else message.text[:397] + "..."
-    
-    await message.answer(
-        f"📢 <b>Предпросмотр сообщения</b>\n\n"
-        f"{preview_text}\n\n"
-        f"⚠️ Сообщение будет отправлено <b>всем</b> пользователям бота.",
-        parse_mode="HTML",
-        reply_markup=kb
+    preview_text = (
+        "📢 <b>Предпросмотр рассылки:</b>\n\n"
+        f"{message.text}\n\n"
+        "Отправить это сообщение всем пользователям?"
     )
-    await state.set_state(BroadcastStates.confirm_broadcast)
+    
+    await message.answer(preview_text, parse_mode="HTML", reply_markup=kb)
 
 @dp.callback_query(lambda c: c.data in ["broadcast_confirm", "admin_return"])
 async def process_broadcast_confirmation(call: CallbackQuery, state: FSMContext):
@@ -736,23 +664,21 @@ async def safe_send_message(chat_id: int, text: str, parse_mode: str = None) -> 
 async def main():
     try:
         # Создаем директорию для файлов, если она не существует
-        os.makedirs("data", exist_ok=True)
+        os.makedirs(DATA_DIR, exist_ok=True)
         
         # Инициализируем базу данных
         init_db()
         
         # Проверяем наличие необходимых файлов
-        for file in [LOGS_FILE, USERS_FILE, STATS_FILE]:
-            if not os.path.exists(file):
-                logging.info(f"Создаю файл {file}")
-                if file == LOGS_FILE:
-                    async with aiofiles.open(file, "w", encoding="utf-8") as f:
+        for file_path in [LOGS_FILE, USERS_FILE, STATS_FILE]:
+            if not os.path.exists(file_path):
+                logging.info(f"Создаю файл {os.path.basename(file_path)}")
+                async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
+                    if file_path == LOGS_FILE:
                         await f.write("{}")
-                elif file == USERS_FILE:
-                    async with aiofiles.open(file, "w", encoding="utf-8") as f:
+                    elif file_path == USERS_FILE:
                         await f.write("[]")
-                elif file == STATS_FILE:
-                    async with aiofiles.open(file, "w", encoding="utf-8") as f:
+                    elif file_path == STATS_FILE:
                         await f.write("{}")
 
         # Проверяем подключение к Telegram
@@ -765,17 +691,34 @@ async def main():
 
         # Запускаем бота
         logging.info("Запуск бота...")
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        
+        # Создаем задачу для graceful shutdown
+        stop = asyncio.Event()
+        
+        async def shutdown(signal):
+            logging.info(f"Получен сигнал {signal.name}...")
+            stop.set()
+            
+        for signal in (SIGINT, SIGTERM):
+            asyncio.get_event_loop().add_signal_handler(
+                signal, lambda s=signal: asyncio.create_task(shutdown(s))
+            )
+            
+        try:
+            await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        finally:
+            logging.info("Останавливаю бота...")
+            await bot.session.close()
+            
     except Exception as e:
         logging.error(f"Критическая ошибка: {e}")
         raise
     finally:
-        # Закрываем сессию бота
-        await bot.session.close()
         logging.info("Бот остановлен")
 
 if __name__ == "__main__":
     try:
+        # Запускаем бота
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("Бот остановлен пользователем")
