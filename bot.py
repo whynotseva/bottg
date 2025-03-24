@@ -386,7 +386,7 @@ async def admin_panel(message: Message):
     )
     await message.answer("⚙️ <b>Админ-панель</b>", parse_mode="HTML", reply_markup=kb)
 
-@dp.callback_query(lambda c: c.data in ["admin_excel_stats", "admin_broadcast", "admin_close"])
+@dp.callback_query(lambda c: c.data in ["admin_excel_stats", "admin_broadcast", "admin_close", "admin_return"])
 async def admin_panel_actions(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         await call.answer("❌ Нет доступа!", show_alert=True)
@@ -423,6 +423,10 @@ async def admin_panel_actions(call: CallbackQuery, state: FSMContext):
 
         elif call.data == "admin_close":
             await call.message.delete()
+            
+        elif call.data == "admin_return":
+            await state.clear()
+            await return_to_admin_panel(call.message)
 
     except Exception as e:
         logging.error(f"Ошибка в админ-панели: {e}")
